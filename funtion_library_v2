@@ -1,0 +1,120 @@
+#Lab 2b)
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
+
+def qofx(t,x_init):
+    q = 1 - Makeham(x_init+t/12)/Makeham(x_init+(t-1)/12)
+    return q
+
+def smoft():
+    smoft = 0.02/12 #constant 2 percent yearly chance of transfer
+    return smoft
+
+def pp_to_po(pp_init,pp_to_de,pp_to_tr,x,u):
+    if x == u+1/12:
+        pp_to_po = pp_init - pp_to_de - pp_to_tr
+    else:
+        pp_to_po = 0
+    return pp_to_po
+
+def pp_to_de(pp_init,t,x):
+    pp_to_de = pp_init * qofx(t,x)
+    return pp_to_de
+
+def pp_to_tr(pp_init,pp_to_de,t):
+    pp_to_tr = (pp_init - pp_to_de) * smoft()
+    return pp_to_tr
+
+def po_to_de(po_init,t,x):
+    po_to_de = po_init * qofx(t,x)
+    return po_to_de
+
+def Makeham(x):
+    alpha = 0.000853309 #Values from assignment 2
+    beta = 5.31717e-07
+    gamma = 0.137837216
+    makeham = np.exp( -alpha*x - (beta/gamma) * (np.exp(gamma*x)-1))
+    return makeham
+
+def state_model():
+    t_max = 720 #measured in months
+    x_init = 60
+    u = 65
+    state_pop = pd.DataFrame(np.zeros((t_max,6)),columns = ['pp','po','de','tr', 't_pp_de', 't_pp_tr'])
+    sm = 1 - ((1-0.02) ** (1/12))
+    #simulation of state model
+    for t in range(t_max):
+        if t == 0:
+            state_pop['pp'].iloc[t] = 1 #PH in pp since 60 Yold, retire at 65
+        else:
+            x = 60 + (t-1)/12
+            pp_init = state_pop['pp'].iloc[t-1]
+            po_init = state_pop['po'].iloc[t-1]
+            #transitions
+            de = pp_to_de(pp_init,t,x_init) + po_to_de(po_init,t,x_init)
+            tr = pp_to_tr(pp_init,de,t)
+            po = pp_to_po(pp_init,de,tr,x,u) - po_to_de(po_init,t,x_init)
+            pp = (pp_to_de(pp_init,t,x_init) + po_to_de(po_init,t,x_init) + tr + po)
+            t_pp_tr = (state_pop['pp'].iloc[t - 1] - state_pop['t_pp_tr'].iloc[t - 1])*sm
+            #pop update
+            state_pop['de'].iloc[t] = state_pop['de'].iloc[t-1] + de
+            state_pop['tr'].iloc[t] = state_pop['tr'].iloc[t-1] + tr
+            state_pop['po'].iloc[t] = state_pop['po'].iloc[t-1] + po
+            state_pop['t_pp_de'].iloc[t] = state_pop['po'].iloc[t - 1]  * qofx(t, x)
+            state_pop['t_pp_tr'].iloc[t] = t_pp_tr
+            if x <= u:
+                state_pop['pp'].iloc[t] = state_pop['pp'].iloc[t-1] - pp
+    return state_pop
+
+def first_order_reserve(num_years):
+    G_init = 2000000
+    premium=120000/12
+    G_rate = 0.02
+    rate = (1+G_rate/12)
+    G = np.zeros((12*num_years)+1)
+    b = 166842.647408 #This is from the previous lab, lab 2a)
+    G[0] = G_init
+    for t in range(1, (12*num_years)+ 1):
+        if t <= 60:
+            q = qofx(t, 60)
+            sum_at_risk = q / (1 - q) * (-G[t - 1])
+            G[t]= premium - sum_at_risk+ G[t-1]*rate # check here
+            g_temp = premium - sum_at_risk+ G[t-1]*rate # check here
+        else:
+            q = qofx(t, 60)
+            sum_at_risk = q / (1 - q) * (-G[t - 1])
+            G[t]= - sum_at_risk + (G[t-1]*rate) - b/12 # check here
+    return G
+    """
+    #variable initiation
+    premium = 120000
+    V_init = 2200000
+    G_rate = 0.02
+    Prgn_rate = 0.02
+    G_of_x_init = 2000000
+    x_init = 60
+    u = 65 # z in lectures
+    sg = np.log(1+G_rate)
+    ret_to_max = 120 - u
+
+    years_to_max = 120 - 60 #60 is current age, 90 is set to be the max age, 30 years into the future
+    aff_variables = ["G(x)","premium","risk_premium","b"]
+
+    One_order_model = pd.DataFrame(np.zeros((years_to_max*12+1,len(aff_variables))), columns = aff_variables)
+    One_order_model["G(x)"].iloc[0] = 2000000
+    One_order_model["premium"] = premium
+    One_order_model['b'] = b_val
+
+    for t in range(years_to_max*12):
+        if t < ((u-x_init)*12):
+            One_order_model['risk_premium'].iloc[t] = - (qofx(t+1,x_init) / (1 - qofx(t+1,x_init))) * One_order_model['G(x)'].iloc[t]
+            One_order_model["G(x)"].iloc[t+1] = One_order_model["G(x)"].iloc[t] * (1+G_rate/12) + premium/12 - One_order_model['risk_premium'].iloc[t]
+        else:
+            One_order_model['risk_premium'].iloc[t] = - (qofx(t+1,x_init) / (1 - qofx(t+1,x_init))) * One_order_model['G(x)'].iloc[t]
+            One_order_model["G(x)"].iloc[t+1] = One_order_model["G(x)"].iloc[t] * (1+G_rate/12) - One_order_model['risk_premium'].iloc[t] - b_val/12
+
+    return One_order_model
+    """
