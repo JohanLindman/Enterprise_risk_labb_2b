@@ -1,0 +1,246 @@
+#Main script
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import matplotlib.pyplot as plt
+import function_library as fl
+from matplotlib.dates import DateFormatter
+
+alpha = 0.000853309 #Values from assignment 2
+beta = 5.31717e-07
+first_order_reserve = fl.first_order_reserve(30, alpha, beta)
+state_model = fl.state_model(alpha, beta)
+b = 166842.647408 #This is from the previous lab, lab 2a)
+premium = 120000 / 12
+
+first_cash_flow = np.zeros(720)
+#Put this outside of the loop
+first_order_60 = fl.first_order_reserve(60, alpha, beta)
+for t in range(720):
+    if t == 0:
+        first_cash_flow[t] = 0 #Not zero for t = 0 I think, why first BE wrong? I think 0 / Johan
+    else:
+        first_cash_flow[t] = state_model.loc[t, "po"] * b / 12 + state_model.loc[t, "t_pp_tr"] * first_order_60[t - 1] - state_model.loc[t, "pp"] * premium
+
+def get_r(b_vector, t, tau, cf):
+    b1 = b_vector.iloc[t, 0]
+    b2 = b_vector.iloc[t, 1]
+    b3 = b_vector.iloc[t, 2]
+    f2 = (1 - np.exp(-0.7308 * tau)) / (0.7308 * tau)
+    f3 = (1 - np.exp(-0.7308 * tau)) / (0.7308 * tau) - np.exp(-0.7308 * tau)
+    return b1 + b2 * f2 + b3 * f3
+
+def duration_calc(cf, r, t):
+    upper = 0
+    lower = 0
+    for k in range(1, (len(cf)-120) - t):
+        #print(len(cf)-120)
+        #print(k)
+        upper += k / 12 * cf[k] * np.exp(-r[k] * k / 12)
+        lower += cf[k] * np.exp(-r[k] * k / 12)
+    tmp = upper / lower
+        #tmp += (k / 12 * cf[k] * np.exp(-r[k] * k / 12)) / (cf[k] * np.exp(-r[k] * k / 12))
+    weight_1 = (tmp - 30) / -25
+    weight_2 = 1 - weight_1
+    return weight_1, weight_2, tmp
+
+def rebalance_cm(stock_allocation, bond_allocation, p2_vector):
+        total_sum = np.sum(p2_vector)
+        stock_allocation = (total_sum / 2) / 10
+        bond_allocation = total_sum / 2
+        return stock_allocation, bond_allocation
+
+def alm_model(num_months, num_stocks, scenario_bool, scenario, alpha, beta, start_col, end_col, strategy):
+    #From lab assignment 2a:
+    x = 60
+    z = 65
+    s = 120 - z
+    premium = 120000 / 12
+    s_p = np.log(1 + 0.02)
+
+    #Initializing the vectors and matrixes were gonna store values in.
+    V = np.zeros((num_months, num_stocks))
+    p_1 = np.zeros((num_months, num_stocks))
+    p_2 = np.zeros((num_months, num_stocks))
+    net_cf = np.zeros(num_months)
+    assets_value = np.zeros(num_months)
+    second_order_V = np.zeros(num_months)
+    portfolio_return = np.zeros(num_months)
+    be = np.zeros(num_months + 1)
+    bof = np.zeros(num_months)
+    expected_G = np.zeros((num_months-1,1))
+    expected_V = np.zeros((num_months-1,1))
+    B = np.zeros(num_months)
+    makeham_array = np.zeros(num_months)
+    b = 166842.647408 #This is from the previous lab, lab 2a)
+
+    scenario_file = pd.read_csv(r'C:\Users\johan\Downloads\ScenarioFile_HS.csv', sep = ',') #Scenario file
+    one_scenario_file = pd.read_csv(r'C:\Users\johan\Downloads\OneScenario.csv', sep = ',') #One-scenario file
+    #scenario_bool = True #change here to determine which file
+
+    if scenario_bool:
+        #scenario = 73 #For the scenario-file, select the scenario you would like here
+        current_df = scenario_file[scenario_file["Scenario"] == scenario]
+    else:
+        current_df = one_scenario_file
+
+    b_df = current_df.iloc[:, 17 : 21]
+    #r = get_r_vector(b_df, 0.7308)
+
+    for t in range(0, num_months):
+        if strategy == 0: #Regular allucation for Q5)
+            V[t, :] = current_df.iloc[t, start_col : end_col]
+        if strategy == 1: #Allocation for 6b) BH(0 / 100)
+            V[t, :] = current_df.iloc[t, start_col] #Change here to determine underlying data
+        elif strategy == 2: #Allocation for 6c) BH (50 / 50)
+            V[t, :] = current_df.iloc[t, start_col : end_col]
+        elif strategy == 3: #Allocation for 6d) CM(50 / 50)
+            V[t, :] = current_df.iloc[t, start_col : end_col]
+        elif strategy == 4 or strategy == 5:
+            V[t, :] = current_df.iloc[t, list(range(2, 13)) + [16]]#pd.concat([current_df.iloc[t, 2 : 12], current_df.iloc[t, 16]], axis = 1)
+
+        current_cash_flow = first_cash_flow[t : -1]
+        tmp = 0
+        r = np.zeros(len(current_cash_flow))
+        for i in range(1, len(current_cash_flow)):
+            r[i] = get_r(b_df, t - 1, i, current_cash_flow)
+            #if r < -1: r = -0.99
+            #tmp += current_cash_flow[i] * np.exp(-np.log(1 + r) * ((i + 1)/12)) #Discounted Nelson-Siegel
+            tmp += current_cash_flow[i] * np.exp(-r[i] *(i + 1) / 12) #Discounted cf with NS-parameters
+        be[t - 1] = tmp
+
+    if strategy == 1 or strategy == 0: #Initial allocation for 0 / 100 or 100 / 0 strategies
+        p_2[0, :] = 2200000 / num_stocks
+        assets_value[0] = 2200000
+        second_order_V[0] = 2200000
+    elif strategy == 2 or strategy == 3: #Initial allocation for 50 / 50 strategies
+        p_2[0, 0 : 9] = (2200000 / 2) / 10
+        p_2[0, 10] = 2200000 / 2
+        assets_value[0] = 2200000
+        second_order_V[0] = 2200000
+    elif strategy == 4: #Initial allocation for 50 / 50 strategies strategy 4
+        p_2[0, 0 : 9] = (2200000 / 2) / 10
+        weight_5, weight_30, duration = duration_calc(first_cash_flow, r, 0)
+        print(weight_5,weight_30)
+        p_2[0, 10] = (2200000 / 2) * weight_5 #initiate with duration match
+        p_2[0, 11] = (2200000 / 2) * weight_30
+        assets_value[0] = 2200000
+        second_order_V[0] = 2200000
+    elif strategy == 5:
+        print("strategy 5 (CPPI) not finished yet xD, lol")
+
+    for t in range(1, num_months):
+        p_1[t, :] = p_2[t - 1, :] * V[t, :] / V[t - 1, :]
+        p_2[t, :] = p_1[t, :] + net_cf[t] * p_1[t, :] / np.sum(p_1[t, :])
+        if strategy == 3:
+            stock_allocation, bond_allocation = rebalance_cm(50, 50, p_2[t, :])
+            p_2[t, 0 : 9] = stock_allocation
+            p_2[t, 10] = bond_allocation
+
+        portfolio_return[t] = np.sum(p_1[t, :]) / np.sum(p_2[t - 1, :])
+        if t <= (60 + 1): #No idea why +1 but it works
+            net_cf[t] = state_model.loc[t, "pp"] * premium - state_model.loc[t, "t_pp_tr"] * max(first_order_reserve[t - 1], second_order_V[t - 1]) + state_model.loc[t, "po"] * b / 12 #Negative cf so reversed signs
+            second_order_V[t] = premium - fl.qofx(t, 60, alpha, beta) / (1 - fl.qofx(t, 60, alpha, beta)) * (-second_order_V[t - 1]) + second_order_V[t - 1] * portfolio_return[t]
+        else:
+            second_order_V[t] = - fl.qofx(t - 1, 60, alpha, beta) / (1 - fl.qofx(t - 1, 60, alpha, beta)) * (-second_order_V[t - 1]) + second_order_V[t - 1] * portfolio_return[t - 1]
+            current_age = x + t / 12
+            cumulative_makeham = 0 #reset denominator to calculate the next monthly payout in the second order reserve
+            for tau in range(0, 12 * int((z + s - current_age)) + 1):
+                cumulative_makeham += fl.Makeham(current_age + tau / 12, alpha, beta) / fl.Makeham(current_age, alpha, beta) * np.exp(-s_p * tau / 12)
+            makeham_array[t - 1] = cumulative_makeham * 1 / 12
+            B[t - 1] = second_order_V[t] / makeham_array[t - 1]
+            second_order_V[t] = second_order_V[t] - max(B[t - 1] / 12, b / 12)
+            net_cf[t - 1] = state_model.loc[t, "pp"] * premium - state_model.loc[t, "t_pp_tr"] * max(first_order_reserve[t - 1], second_order_V[t - 1]) - state_model.loc[t, "po"] * max(B[t - 1] / 12, b/ 12)
+
+        assets_value[t] = assets_value[t - 1] * portfolio_return[t] + net_cf[t - 1] #Updates total asset value
+
+        if strategy == 4:
+            stock_allocation, bond_allocation = rebalance_cm(50, 50, p_2[t, :])
+            p_2[t, 0 : 9] = stock_allocation
+            weight_5, weight_30, duration = duration_calc(first_cash_flow[t : -1], r, t)
+            bond_allocation = bond_allocation * 2
+            p_2[t, 10] = bond_allocation * weight_5
+            p_2[t, 11] = bond_allocation * weight_30
+            print("Duration: " + str(duration))
+            print("weight_5: " + str(weight_5))
+            print("weight_30: " + str(weight_30))
+
+        #Have to use weird indexing here because we start the loop at 1
+        if t == 1:
+            expected_G[t - 1, 0] = 2000000
+            expected_V[t - 1, 0] = 2200000
+        else:
+            expected_G[t - 1, 0] = (state_model.loc[t - 1, "pp"] + state_model.loc[t - 1, "po"]) * first_order_reserve[t - 1]
+            expected_V[t - 1, 0] = (state_model.loc[t - 1, "pp"] + state_model.loc[t - 1, "po"]) * second_order_V[t - 1]
+
+    for t in range(num_months):
+        bof[t] = assets_value[t] - be[t]
+
+    result_dict = {"EG" : expected_G,
+                   "EV" : expected_V,
+                   "BE" : be[: -1], 
+                   "BOF" : bof,
+                   "2 order reserve" : second_order_V,
+                   "assets" : assets_value}
+    return result_dict
+
+#enter number of months, true if scenariofileHS, false otherwise, and what scenario you want to extract
+#def alm_model(num_months, num_stocks, scenario_bool, scenario, alpha, beta, start_col, end_col, strategy):
+#GUIDE:
+#num_months: how many months we want to plot for.
+#num_stocks: Amount of assets in our strategy
+#scenario_bool: True if scenario file, False if OneScenario file
+#scenario: the scenario you want to extract from scenariofile
+#alpha, beta: alpha beta values, we send in alpha * 0.9 and beta * 0.9 to get 5c)
+#start_col, end_col: the columns from the original dataframes you want
+#strategy: strategy = 0 is regular, strategy = 1 is 6a), strategy = 2 is 6b) and so on...
+scenario_dict = alm_model(120, 12, True, 17, alpha, beta, 2, 13, 4)
+plt.plot(scenario_dict["EG"], label = "expected G")
+plt.plot(scenario_dict["EV"], label = "expected V")
+plt.plot(scenario_dict["BE"][: -1], label = "best estimate")
+plt.plot(scenario_dict["assets"][: -1], label = "assets")
+plt.plot(scenario_dict["BOF"][: - 1], label = "bof")
+plt.legend()
+
+"""
+#Question 5b)
+df_5 = pd.DataFrame(index = ["EG", "EV", "BE", "Second reserve", "Assets"], columns = [5, 10, 15, 20, 25, 30])
+for t in range(60, 360 + 1, 60):
+    df_5.loc["EG", t / 12] = scenario_dict["EG"][t - 1]
+    df_5.loc["EV", t / 12] = scenario_dict["EV"][t - 1]
+    df_5.loc["BE", t / 12] = scenario_dict["BE"][t - 1]
+    df_5.loc["Second reserve", t / 12] = scenario_dict["2 order reserve"][t]
+    df_5.loc["Assets", t / 12] = scenario_dict["assets"][t] 
+#Question 5c)
+#risk_dict = alm_model(360 + 1, 10, False, 35, alpha * 0.9, beta * 0.9, 2, 12, 1)
+#scr_longevity = max(0, scenario_dict["BOF"][1] - risk_dict["BOF"][1])
+"""
+#Question 6a)
+
+def scr_estimation(start_col, end_col, strategy, num_scenarios):
+    delta_bof = np.zeros(num_scenarios)
+    bof_1 = np.zeros(num_scenarios)
+    bof_0 = np.zeros(num_scenarios)
+    for scenario in range(1, num_scenarios):
+        tmp_dict = alm_model(12 + 1, 1, True, scenario, alpha, beta, start_col, end_col, strategy) #12 + 1 months here since we only need BOF[0] and BOF[12]
+        bof_1[scenario] = tmp_dict["BOF"][12]
+        bof_0[scenario] = tmp_dict["BOF"][0]
+        delta_bof[scenario] = bof_0[scenario] - bof_1[scenario]
+        if scenario % 500 == 0:
+            print("currently on: " + str(scenario))
+    return_dict = {}
+    return_dict = {"delta BOF" : delta_bof,
+                   "BOF 1 year" : bof_1,
+                    "BE" : tmp_dict["BE"]}
+    return return_dict
+
+#scr_estimation_a = scr_estimation(14, 14, 1, 2000 + 1)
+#plt.plot(scr_estimation_a["delta BOF"])
+#scr_estimation_b = scr_estimation(2, 13, 3, 100 + 1)
+
+#print("SCR from 6a) " + str(np.percentile(scr_estimation_a["delta BOF"], 95)))
+#plt.hist(scr_estimation_a["BOF 1 year"], bins = 50)
+#plt.xlim(-500000, 3500000)
+
+#strategy_1 = alm_model(120 + 1, 1, True, 35, alpha, beta, 14, 14, 1)
+#strategy_2 = alm_model(120 + 1, 11, True, 35, alpha, beta, 2, 13, 2)
